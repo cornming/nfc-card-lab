@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.nfc.NfcAdapter
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -27,13 +28,16 @@ import java.util.Locale
 
 /**
  * 讀卡驗證：刷卡 → 顯示 UID 與卡片資訊 → 判斷是否適合用 UID 辨識 → 可登錄成白名單。
+ * 已登錄的卡刷過後，依規則（冷卻時間）執行「動作」，目前的動作是模擬開鎖。
  * 使用 NFC reader mode，App 在前景時才會讀卡。沒有網路權限。
  */
 class MainActivity : Activity() {
 
     private lateinit var store: CardStore
+    private lateinit var opLog: OperationLog
     private val stability = StabilityTracker()
-    private val history = ArrayDeque<String>()
+    private val policy = AccessPolicy(COOLDOWN_MS)
+    private val actuator: Actuator = DryRunActuator()
 
     private var adapter: NfcAdapter? = null
     private var current: CardSnapshot? = null
@@ -47,7 +51,9 @@ class MainActivity : Activity() {
     private lateinit var findingsView: TextView
     private lateinit var stabilityView: TextView
     private lateinit var registeredView: TextView
-    private lateinit var historyView: TextView
+    private lateinit var actionView: TextView
+    private lateinit var logView: TextView
+    private lateinit var testActionBtn: Button
     private lateinit var registerBtn: Button
     private lateinit var unregisterBtn: Button
     private lateinit var copyBtn: Button
@@ -64,10 +70,11 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = CardStore(this)
+        opLog = OperationLog(this)
         setContentView(buildUi())
         showIdle()
         refreshRegistered()
-        renderHistory()
+        renderLog()
     }
 
     override fun onResume() {
@@ -96,10 +103,19 @@ class MainActivity : Activity() {
         val st = stability.record(card.uidHex)
         currentStability = StabilityTracker.message(st)
 
-        if (registered) {
-            setBanner("✅ 已登錄的卡\n${card.uidHex}", GREEN)
-        } else {
-            setBanner("❌ 未登錄的卡\n${card.uidHex}", ORANGE)
+        when (policy.decide(registered, SystemClock.elapsedRealtime())) {
+            AccessPolicy.Decision.ALLOW -> {
+                setBanner("🔓 已登錄的卡，執行動作…\n${card.uidHex}", GREEN)
+                runAction(card.uidHex)
+            }
+            AccessPolicy.Decision.DENY_COOLDOWN -> {
+                setBanner("⏳ 冷卻中，沒有重複執行\n${card.uidHex}", GRAY)
+                logEvent(card.uidHex, "已登錄，但在 ${COOLDOWN_MS / 1000} 秒冷卻時間內，未執行")
+            }
+            AccessPolicy.Decision.DENY_UNREGISTERED -> {
+                setBanner("❌ 未登錄的卡，已拒絕\n${card.uidHex}", ORANGE)
+                logEvent(card.uidHex, "未登錄，已拒絕")
+            }
         }
         detail.text = CardAnalyzer.describe(card)
         findingsView.text = currentFindings.joinToString("\n\n") { "${icon(it.level)} ${it.text}" }
@@ -108,11 +124,45 @@ class MainActivity : Activity() {
         registerBtn.isEnabled = !registered && CardAnalyzer.isUidCandidate(card)
         unregisterBtn.isEnabled = registered
         copyBtn.isEnabled = true
+    }
 
-        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        history.addFirst("$time  ${card.uidHex}  ${if (registered) "已登錄" else "未登錄"}")
-        while (history.size > MAX_HISTORY) history.removeLast()
-        renderHistory()
+    /** 執行動作（回呼可能在背景執行緒，結果統一切回主執行緒處理）。 */
+    private fun runAction(uidHex: String) {
+        actuator.unlock { result ->
+            runOnUiThread {
+                result.fold(
+                    onSuccess = { logEvent(uidHex, "已登錄 → $it") },
+                    onFailure = {
+                        setBanner("⚠️ 動作失敗\n${it.message ?: it.javaClass.simpleName}", RED)
+                        logEvent(uidHex, "已登錄 → 動作失敗：${it.message ?: it.javaClass.simpleName}")
+                    },
+                )
+            }
+        }
+    }
+
+    /** 手動觸發動作，不經過刷卡與規則，用來單獨測試動作本身。 */
+    private fun runManualAction() {
+        actuator.unlock { result ->
+            runOnUiThread {
+                result.fold(
+                    onSuccess = {
+                        setBanner("🔓 手動測試動作\n$it", GREEN)
+                        logEvent("手動", it)
+                    },
+                    onFailure = {
+                        setBanner("⚠️ 手動測試失敗\n${it.message ?: it.javaClass.simpleName}", RED)
+                        logEvent("手動", "動作失敗：${it.message ?: it.javaClass.simpleName}")
+                    },
+                )
+            }
+        }
+    }
+
+    private fun logEvent(who: String, text: String) {
+        val time = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        opLog.add("$time  $who  $text")
+        renderLog()
     }
 
     private fun onReadError(e: Throwable) {
@@ -182,16 +232,17 @@ class MainActivity : Activity() {
 
     private fun resetTest() {
         stability.reset()
-        history.clear()
-        renderHistory()
+        opLog.clear()
+        renderLog()
         stabilityView.text = ""
-        toast("已重設穩定性測試與刷卡紀錄（已登錄的卡不受影響）")
+        toast("已重設穩定性測試與操作紀錄（已登錄的卡不受影響）")
     }
 
     private fun buildReport(c: CardSnapshot): String = buildString {
         appendLine("NFC 讀卡驗證 v${versionName()}")
         appendLine("手機：${Build.MANUFACTURER} ${Build.MODEL}，Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）")
         appendLine("已登錄：${if (store.contains(c.uidHex)) "是" else "否"}")
+        appendLine("動作：${actuator.name}，冷卻 ${COOLDOWN_MS / 1000} 秒")
         appendLine()
         appendLine(CardAnalyzer.describe(c))
         appendLine()
@@ -219,8 +270,13 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderHistory() {
-        historyView.text = if (history.isEmpty()) "刷卡紀錄：無" else "刷卡紀錄\n" + history.joinToString("\n")
+    private fun renderLog() {
+        val lines = opLog.all().take(MAX_LOG_SHOWN)
+        logView.text = if (lines.isEmpty()) {
+            "操作紀錄：無"
+        } else {
+            "操作紀錄（最近 ${lines.size} 筆）\n" + lines.joinToString("\n")
+        }
     }
 
     private fun setBanner(text: String, color: Int) {
@@ -272,8 +328,13 @@ class MainActivity : Activity() {
         resetBtn = button("重設測試") { resetTest() }
         column.addView(row(copyBtn, resetBtn), matchWidth(top = 4))
 
+        actionView = text("動作：${actuator.name}\n冷卻時間：${COOLDOWN_MS / 1000} 秒", 14f)
+            .also { column.addView(it, matchWidth(top = 16)) }
+        testActionBtn = button("手動測試動作") { runManualAction() }
+        column.addView(testActionBtn, matchWidth(top = 4))
+
         registeredView = text("", 14f, mono = true).also { column.addView(it, matchWidth(top = 16)) }
-        historyView = text("", 13f, mono = true).also { column.addView(it, matchWidth(top = 16)) }
+        logView = text("", 13f, mono = true).also { column.addView(it, matchWidth(top = 16)) }
 
         val scroll = ScrollView(this).apply {
             setBackgroundColor(Color.WHITE)
@@ -330,7 +391,9 @@ class MainActivity : Activity() {
             .apply { topMargin = dp(top) }
 
     private companion object {
-        const val MAX_HISTORY = 20
+        /** 已登錄的卡成功執行動作後，這段時間內不重複執行。 */
+        const val COOLDOWN_MS = 5_000L
+        const val MAX_LOG_SHOWN = 20
         val GREEN = Color.parseColor("#2E7D32")
         val ORANGE = Color.parseColor("#EF6C00")
         val RED = Color.parseColor("#C62828")
