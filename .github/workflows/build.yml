@@ -19,11 +19,34 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # 固定簽章：有設定 Secrets 才使用，否則退回隨機的 debug 金鑰（APK 仍可安裝，但無法覆蓋舊版）。
+      # 需要的 Secrets：NFC_KEYSTORE_BASE64、NFC_KEYSTORE_PASSWORD
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.NFC_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NFC_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/nfc.keystore"
+            {
+              echo "NFC_KEYSTORE_FILE=$RUNNER_TEMP/nfc.keystore"
+              echo "NFC_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "Using the fixed signing key."
+          else
+            echo "::warning::No signing secrets set. The APK is signed with a random debug key and cannot update an installed copy."
+          fi
+
       - name: Unit tests
         run: ./gradlew testDebugUnitTest
 
       - name: Build debug APK
         run: ./gradlew assembleDebug
+
+      - name: Show APK signing certificate
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-(1|256) digest"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

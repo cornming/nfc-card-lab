@@ -18,7 +18,9 @@
 2. 把 APK 傳到手機，點開安裝。Android 會要求你允許「安裝未知來源的應用程式」。
 3. 打開 App，確認手機的 NFC 已開啟，把卡片貼近手機背面（天線位置依機型而異）。
 
-這是 debug 版本（用 debug 金鑰簽署），只適合自己測試。
+這是 debug 版本，只適合自己測試。
+
+**關於簽章**：Android 不允許用不同簽章的 APK 覆蓋安裝。0.1.0 是用隨機 debug 金鑰簽署，0.1.1 起改用固定金鑰，所以從 0.1.0 升級時要**先解除安裝一次**（已登錄的白名單會一起清掉）。之後用同一把金鑰簽署的版本都可以直接覆蓋安裝。固定金鑰的設定方式見下方「固定簽章」。
 
 ## 怎麼看結果
 
@@ -43,14 +45,30 @@
 | 階段 | 內容 |
 |---|---|
 | M0／M1（本版） | 讀卡、驗證、白名單 |
-| M2 | 接動作層，用手動按鈕開鎖（Google Home APIs 或 eWeLink 開放 API，視實測結果決定） |
+| M2 | 接動作層，用手動按鈕開鎖（Google Home APIs 或 eWeLink 開放 API）。若走 Google Home APIs：SDK 需要登入 Google Home Developers 下載（Google 公開的 Maven 上沒有對應版本），並需要 Google Cloud 的 OAuth 用戶端（綁定套件名稱與簽章 SHA-1），所以簽章金鑰必須固定 |
 | M3 | 刷卡觸發開鎖，使用點動模式 |
 | M4 | 時段、冷卻、要求手機解鎖、操作紀錄 |
+
+## 固定簽章
+
+金鑰**不放在 repo 裡**。簽章設定讀取環境變數（`NFC_KEYSTORE_FILE`、`NFC_KEYSTORE_PASSWORD`，別名預設 `nfc-card-lab`，可用 `NFC_KEY_ALIAS` 覆寫）；沒有提供時退回 Android 預設的 debug 金鑰。
+
+在 GitHub Actions 使用固定金鑰：到 repo 的 Settings → Secrets and variables → Actions，新增兩個 repository secrets：
+
+| Secret | 內容 |
+|---|---|
+| `NFC_KEYSTORE_BASE64` | 金鑰檔（PKCS12）的 Base64 編碼 |
+| `NFC_KEYSTORE_PASSWORD` | 金鑰檔密碼（金鑰密碼與它相同） |
+
+沒有設定這兩個 Secrets 時，CI 仍會編譯成功，但會顯示警告，APK 用隨機金鑰簽署。每次 CI 會印出 APK 的簽章憑證指紋，可用來確認金鑰有沒有固定。
+
+**金鑰檔要自己備份**：遺失之後只能重新產生，已安裝的 App 必須先解除安裝才能換新金鑰。
 
 ## 狀態
 
 - 已通過單元測試並可編譯。
-- **尚未在實體手機上驗證**：第一次在手機上跑，才是真正的測試。有問題請用「複製結果」把報告貼回來。
+- 已在 Google Pixel 10 Pro（Android 17）實機測試過讀卡：能讀到 MIFARE Classic 1K 卡的 UID，同一張卡連續刷 8 次 UID 一致。
+- 尚未實測的是後續階段（控制裝置）。有問題請用「複製結果」把報告貼回來。
 
 ## 自行建置
 
