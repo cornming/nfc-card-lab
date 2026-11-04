@@ -1,16 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 只需要 NFC 權限；沒有網路權限，讀到的資料不會離開手機。 -->
     <uses-permission android:name="android.permission.NFC" />
+
+    <!--
+        網路權限只用在「HTTP POST」動作：你替某張卡設定了 POST 網址，刷卡時才會連線。
+        沒有設定 POST 動作就不會有任何網路連線；沒有遙測、沒有更新檢查。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- 不強制要求 NFC，沒有 NFC 的手機也能安裝，App 內會顯示說明。 -->
     <uses-feature
         android:name="android.hardware.nfc"
         android:required="false" />
 
+    <!--
+        允許明碼 http 只是為了連區域網路裡的服務（例如自架的 Home Assistant）。
+        實際可連的位址由程式裡的 UrlPolicy 限制：http 只能連私有網段、localhost、*.local。
+    -->
     <application
         android:allowBackup="false"
+        android:usesCleartextTraffic="true"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity

@@ -2,7 +2,7 @@
 
 查證日期：2026-11-03。標「未驗證」的是我沒有實測或沒找到來源的部分。
 
-目標：刷卡後，讓接在 PSF-B01-GL 開關上的電鎖開一下。App 的動作層是抽象介面（`Actuator`），下面兩個通道各寫一個實作即可。
+目標：刷卡後，讓接在對講機開門按鈕上的 PSF-B01-GL 開關動作一下（模擬按一下開門鈕）。App 的動作層是抽象介面（`Actuator`），下面兩個通道各寫一個實作即可。
 
 ## 通道 A：eWeLink 開放 API
 
@@ -53,6 +53,22 @@
 | 金鑰處理 | clientSecret 需保密 | 以簽章 SHA-1 綁定，不需要放密鑰 |
 | 狀態 | 免費版有限制，憑證 1 年 | 開放測試版 |
 
+## 補充（2026-11-04）：現有的 Google Home 自動化「芝麻開門」
+
+**使用者提供的現況（我沒有自己驗證）**
+- Google Home 裡有一個自動化「芝麻開門」：起動條件是語音（用 Gemini 說），動作是開啟裝置「一樓大門」。這樣說就能開門。
+- 裝置是接在傳統對講機開門按鈕上的 Sonoff 繼電器類裝置（PSF-B01-GL），**點動已在裝置端設定好**。
+
+**Home APIs 可以直接執行這個自動化**
+- 範例 App 的知識庫文件：Automations 頁會列出住家裡所有的自動化，並可「手動執行（如果支援）」；程式用 `createdAutomation.execute()` 執行，沒有手動起動點時，從第一個起動條件之後開始。
+- 這比自己送「開」的指令好：保留原本的自動化內容與點動行為。
+- **未驗證**：在 Google Home App 建立、以語音起動的自動化，是否算「支援手動執行」。
+
+**不經過 SDK 的方式（都是非官方或未驗證）**
+- Tasker：沒有官方介面可以執行 Google Home 自動化。社群的做法是啟動 Gemini 後用 AutoInput 填字送出（[r/tasker](https://r.darklab.sh/r/tasker/comments/1k1kjdx/how_to_launch_gemini_via_android_intent_and_send)），依賴 Gemini 畫面元件，App 更新就可能失效。Google 沒有公開能帶入文字的 Gemini Intent。
+- Google Home 的「我的最愛」小工具（Android 12 以上）可以放自動化，但點一下是否直接執行**未驗證**；2025 年有 Reddit 回報主畫面捷徑只能建到「自動化資料夾」。
+- Assistant SDK 文字指令：Google 標示僅供實驗與非商業用途；依 Home Assistant 文件，測試模式的憑證每 7 天過期、回應只有音訊沒有文字，無法確認門有沒有真的開。
+
 ## 目前 App 的狀態
 
-v0.2.0 的動作是**模擬開鎖**（`DryRunActuator`），不會控制任何真實裝置。刷卡、白名單、冷卻時間、操作紀錄都已實作並可實測。換成真實通道時，只要新增一個 `Actuator` 實作。
+v0.3.0 有兩種動作：**模擬**與 **HTTP POST**，每張卡各自綁定。POST 已用本機真實的 HTTP 伺服器做過整合測試，尚未對外部服務實測。**Google Home 自動化尚未實作**，需要先完成上面「通道 B」的前置條件。要新增動作種類，就新增一個 `ActionConfig` 子類別與對應的 `Actuator`。

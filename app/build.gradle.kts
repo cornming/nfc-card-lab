@@ -20,8 +20,8 @@ android {
         applicationId = "io.github.cornming.nfccardlab"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.3.0"
     }
 
     signingConfigs {
@@ -59,6 +59,8 @@ kotlin {
 }
 
 // 刻意不加任何執行期相依套件：只用 Android 內建 API，APK 內沒有第三方程式碼。
+// org.json 只給單元測試用（Android 執行時內建；JVM 上的測試需要真正的實作，否則 Android 的假 jar 會直接丟例外）。
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
