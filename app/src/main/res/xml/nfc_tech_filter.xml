@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    App 不在前景時，系統要靠這份清單決定「要不要把這個 NFC 標籤交給本 App」。
+    這裡刻意涵蓋 NFC-A/B/F/V 四種基本技術（各自獨立一組，符合其中任一種即算相符），
+    與 MainActivity 裡 enableReaderMode 的 FLAG_READER_NFC_A/B/F/V 涵蓋範圍一致，
+    這樣「App 在前景」與「App 不在前景」兩種情況下，接受的卡片種類才會一樣。
+-->
+<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <tech-list>
+        <tech>android.nfc.tech.NfcA</tech>
+    </tech-list>
+    <tech-list>
+        <tech>android.nfc.tech.NfcB</tech>
+    </tech-list>
+    <tech-list>
+        <tech>android.nfc.tech.NfcF</tech>
+    </tech-list>
+    <tech-list>
+        <tech>android.nfc.tech.NfcV</tech>
+    </tech-list>
+</resources>

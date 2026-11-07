@@ -55,6 +55,16 @@
 
 注意：UID 可以被複製，**白名單只是辨識，不是安全機制**。
 
+## 疑難排解：刷第一次沒反應，要開啟 App 後再刷一次才成功
+
+這是 Android NFC 的架構限制，不是程式邏輯錯誤：App 的讀卡（reader mode）**只在 App 已經在前景（已開啟）時才會生效**。手機解鎖後，如果 App 還沒開啟或留在背景，第一次刷卡只會把 App 叫起來，那次的卡片資料不會被處理；要等 App 進到前景，再刷第二次才會成功。
+
+0.3.1 起，`AndroidManifest.xml` 加了 NFC 的 `TECH_DISCOVERED` 設定，讓系統在 App 不在前景時，也能把卡片資料一起送進來，由 App 立刻處理，理論上**第一次刷卡就能成功**，不用再刷第二次。
+
+這項改動**尚未在實體手機上驗證**，有兩個已知的行為變化請留意：
+- 手機螢幕有亮、App 不在前景時，靠近任何 NFC 標籤（不只是你登錄的卡，例如悠遊卡、信用卡）都可能讓 App 跳出來。未登錄的卡仍會被拒絕、不會執行任何動作，只是畫面會跳出來。
+- 如果手機上還裝了其他會讀 NFC 標籤的 App（例如 NFC Tools），系統可能會跳出「選擇要用哪個 App 開啟」的選單，需要你手動選一次。
+
 ## 隱私
 
 - **網路權限只用在「HTTP POST」動作**：你替某張卡設定了 POST 網址，刷卡時才會連線，而且只連你設定的那個網址。沒有設定 POST 動作就不會有任何網路連線。沒有遙測、沒有更新檢查。
@@ -70,6 +80,7 @@
 | 0.3.0（本版） | 每張卡各自綁定動作；新增 HTTP POST 動作；冷卻改為每張卡各自計算 |
 | M2 | 新增「Google Home 自動化」動作（執行你現成的自動化），前置條件與限制見 [docs/unlock-channels.md](docs/unlock-channels.md) |
 | M4 的其餘部分 | 時段限制等規則 |
+| 0.3.1 | 加入 NFC `TECH_DISCOVERED` 設定，修正「App 不在前景時，第一次刷卡沒反應、要再刷第二次才成功」 |
 
 ## 固定簽章
 
@@ -90,7 +101,7 @@
 
 - 已通過 54 個單元測試：讀卡分析、刷卡規則、網址規則、樣板、設定的儲存編碼，以及**對本機真實 HTTP 伺服器送出 POST**（方法、標頭、UTF-8 內容、5xx、轉址不跟隨、逾時、連不上）。
 - 已在 Google Pixel 10 Pro（Android 17）實機測試過讀卡：能讀到 MIFARE Classic 1K 卡的 UID，同一張卡連續刷 8 次 UID 一致。
-- **0.2.0 起新增的畫面（設定動作對話框、操作紀錄）與 POST 對真實網路服務的行為，尚未在實體手機上驗證。**有問題請用「複製結果」把報告貼回來。
+- **0.2.0 起新增的畫面（設定動作對話框、操作紀錄）、POST 對真實網路服務的行為，以及 0.3.1 的「App 不在前景時刷卡」修正，都尚未在實體手機上驗證。**有問題請用「複製結果」把報告貼回來。
 
 ## 自行建置
 
@@ -111,6 +122,6 @@ APK 位置：`app/build/outputs/apk/debug/app-debug.apk`。
 - `BindingCodec.kt`、`CardStore.kt`：卡片與動作設定的編碼與儲存。
 - `TagReader.kt`：把 Android 的 `Tag` 轉成純資料。
 - `OperationLog.kt`：操作紀錄。
-- `MainActivity.kt`：畫面與 NFC reader mode。
+- `MainActivity.kt`：畫面、NFC reader mode（App 在前景時），以及 `res/xml/nfc_tech_filter.xml` 搭配的 `TECH_DISCOVERED` Intent 處理（App 不在前景時）。
 
 只使用 Android 內建 API，沒有任何第三方執行期相依套件。

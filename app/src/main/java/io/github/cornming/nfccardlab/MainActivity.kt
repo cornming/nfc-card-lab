@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.nfc.NfcAdapter
+import android.nfc.Tag
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -35,7 +36,14 @@ import java.util.Locale
 /**
  * 讀卡驗證：刷卡 → 顯示 UID 與卡片資訊 → 判斷是否適合用 UID 辨識 → 可登錄成白名單。
  * 每張已登錄的卡可以綁一個「動作」（模擬、HTTP POST…），刷卡後依規則（冷卻時間）執行。
- * 使用 NFC reader mode，App 在前景時才會讀卡。
+ *
+ * 讀卡分兩條路：
+ * 1. App 在前景（已開啟且 resumed）：用 NFC reader mode（[readerCallback]），onResume 啟動、onPause 關閉。
+ * 2. App 不在前景（背景、或還沒開啟）：reader mode 沒有作用，要靠 AndroidManifest 裡宣告的
+ *    TECH_DISCOVERED intent-filter，讓系統把卡片資料透過 Intent 一併送進來，
+ *    由 [handleTagIntent] 在 onCreate（冷啟動）或 onNewIntent（App 還留在背景堆疊）處理。
+ *    沒有這條路的話，App 不在前景時刷卡只會把 App 叫醒，卡片資料不會被處理，
+ *    要等使用者在 App 開啟後再刷一次才會成功。
  */
 class MainActivity : Activity() {
 
@@ -81,7 +89,35 @@ class MainActivity : Activity() {
         showIdle()
         refreshRegistered()
         renderLog()
+        // 冷啟動：如果是系統透過 TECH_DISCOVERED 把卡片資料連同 Intent 一起送進來的，立刻處理。
+        // 一般從主畫面圖示開啟（LAUNCHER intent）不會帶卡片資料，這裡會直接跳過。
+        handleTagIntent(intent)
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // App 還留在背景堆疊（沒有被系統回收）時，singleTop 讓系統呼叫這裡而不是重新 onCreate。
+        setIntent(intent)
+        handleTagIntent(intent)
+    }
+
+    /**
+     * 處理 TECH_DISCOVERED Intent 裡夾帶的卡片（App 不在前景時，系統叫醒／喚回 App 的那次刷卡）。
+     * 沒有夾帶卡片資料（例如一般開啟 App）就什麼都不做。
+     */
+    private fun handleTagIntent(intent: Intent?) {
+        val tag = intent?.let { extractTag(it) } ?: return
+        val result = runCatching { TagReader.read(tag) }
+        result.fold(onSuccess = ::onCard, onFailure = ::onReadError)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun extractTag(intent: Intent): Tag? =
+        if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
+        } else {
+            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
+        }
 
     override fun onResume() {
         super.onResume()

@@ -31,6 +31,20 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+                沒有這組 intent-filter 時，App 只有在「已經開著且在前景」才能讀卡
+                （靠 MainActivity 裡的 enableReaderMode）。手機解鎖後、App 還沒開啟前刷卡，
+                系統就只會把 App 叫起來，卡片資料不會送進來，要等使用者再刷第二次才會成功。
+                加上這組之後，App 不在前景時系統也會把卡片資料透過這個 Intent 一併送進來，
+                MainActivity 的 onCreate／onNewIntent 會立刻處理，不需要刷兩次。
+            -->
+            <intent-filter>
+                <action android:name="android.nfc.action.TECH_DISCOVERED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.nfc.action.TECH_DISCOVERED"
+                android:resource="@xml/nfc_tech_filter" />
         </activity>
     </application>
 
