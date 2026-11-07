@@ -44,6 +44,9 @@ import java.util.Locale
  *    由 [handleTagIntent] 在 onCreate（冷啟動）或 onNewIntent（App 還留在背景堆疊）處理。
  *    沒有這條路的話，App 不在前景時刷卡只會把 App 叫醒，卡片資料不會被處理，
  *    要等使用者在 App 開啟後再刷一次才會成功。
+ *
+ * 每筆操作紀錄都會標註是哪條路徑處理的（前景讀卡／冷啟動／背景喚回／手動測試），
+ * 並可以用「複製紀錄」或「匯出紀錄」把完整紀錄整理好帶出去，不需要手動謄打畫面內容。
  */
 class MainActivity : Activity() {
 
@@ -56,6 +59,8 @@ class MainActivity : Activity() {
     private var current: CardSnapshot? = null
     private var currentFindings: List<CardAnalyzer.Finding> = emptyList()
     private var currentStability: String = ""
+    /** 下一次 onCard／onReadError 要記錄的來源，在呼叫前設定（見 [handleTagIntent]、[readerCallback]）。 */
+    private var pendingSource: String = SOURCE_FOREGROUND
 
     private lateinit var nfcStatus: TextView
     private lateinit var nfcSettingsBtn: Button
@@ -77,6 +82,7 @@ class MainActivity : Activity() {
         // 這個回呼在背景執行緒，要先解析再切回主執行緒更新畫面。
         val result = runCatching { TagReader.read(tag) }
         runOnUiThread {
+            pendingSource = SOURCE_FOREGROUND
             result.fold(onSuccess = ::onCard, onFailure = ::onReadError)
         }
     }
@@ -91,22 +97,24 @@ class MainActivity : Activity() {
         renderLog()
         // 冷啟動：如果是系統透過 TECH_DISCOVERED 把卡片資料連同 Intent 一起送進來的，立刻處理。
         // 一般從主畫面圖示開啟（LAUNCHER intent）不會帶卡片資料，這裡會直接跳過。
-        handleTagIntent(intent)
+        handleTagIntent(intent, SOURCE_COLD_START)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // App 還留在背景堆疊（沒有被系統回收）時，singleTop 讓系統呼叫這裡而不是重新 onCreate。
         setIntent(intent)
-        handleTagIntent(intent)
+        handleTagIntent(intent, SOURCE_RESUMED_INTENT)
     }
 
     /**
      * 處理 TECH_DISCOVERED Intent 裡夾帶的卡片（App 不在前景時，系統叫醒／喚回 App 的那次刷卡）。
-     * 沒有夾帶卡片資料（例如一般開啟 App）就什麼都不做。
+     * 沒有夾帶卡片資料（例如一般開啟 App）就什麼都不做。source 會記在操作紀錄裡，
+     * 方便事後判斷這次刷卡是冷啟動還是從背景堆疊喚回。
      */
-    private fun handleTagIntent(intent: Intent?) {
+    private fun handleTagIntent(intent: Intent?, source: String) {
         val tag = intent?.let { extractTag(it) } ?: return
+        pendingSource = source
         val result = runCatching { TagReader.read(tag) }
         result.fold(onSuccess = ::onCard, onFailure = ::onReadError)
     }
@@ -139,6 +147,9 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- 刷卡處理
 
     private fun onCard(card: CardSnapshot) {
+        // 立刻捕捉這次是哪條路徑進來的，避免之後非同步的動作結果（runBinding 的回呼）
+        // 讀到被下一次刷卡覆蓋過的 pendingSource。
+        val source = pendingSource
         current = card
         currentFindings = CardAnalyzer.assess(card)
         val binding = store.get(card.uidHex)
@@ -149,15 +160,15 @@ class MainActivity : Activity() {
         when (policy.decide(card.uidHex, registered, SystemClock.elapsedRealtime())) {
             AccessPolicy.Decision.ALLOW -> {
                 setBanner("▶ 已登錄的卡，執行動作…\n${card.uidHex}", GREEN)
-                runBinding(binding!!, who = card.uidHex)
+                runBinding(binding!!, who = card.uidHex, source = source)
             }
             AccessPolicy.Decision.DENY_COOLDOWN -> {
                 setBanner("⏳ 冷卻中，沒有重複執行\n${card.uidHex}", GRAY)
-                logEvent(card.uidHex, "已登錄，但在 ${COOLDOWN_MS / 1000} 秒冷卻時間內，未執行")
+                logEvent(card.uidHex, "已登錄，但在 ${COOLDOWN_MS / 1000} 秒冷卻時間內，未執行", source)
             }
             AccessPolicy.Decision.DENY_UNREGISTERED -> {
                 setBanner("❌ 未登錄的卡，已拒絕\n${card.uidHex}", ORANGE)
-                logEvent(card.uidHex, "未登錄，已拒絕")
+                logEvent(card.uidHex, "未登錄，已拒絕", source)
             }
         }
         detail.text = CardAnalyzer.describe(card)
@@ -184,19 +195,19 @@ class MainActivity : Activity() {
     }
 
     /** 執行一張卡綁定的動作（結果在背景回呼，統一切回主執行緒處理）。 */
-    private fun runBinding(binding: CardBinding, who: String) {
+    private fun runBinding(binding: CardBinding, who: String, source: String) {
         val ctx = ActionContext(binding.uidHex, binding.label, isoNow())
         ActuatorFactory.create(binding.action).execute(ctx) { result ->
             runOnUiThread {
                 result.fold(
                     onSuccess = {
                         setBanner("✅ $it\n${binding.uidHex}", GREEN)
-                        logEvent(who, "${binding.action.summary()} → $it")
+                        logEvent(who, "${binding.action.summary()} → $it", source)
                     },
                     onFailure = {
                         val msg = it.message ?: it.javaClass.simpleName
                         setBanner("⚠️ 動作失敗：$msg\n${binding.uidHex}", RED)
-                        logEvent(who, "${binding.action.summary()} → 失敗：$msg")
+                        logEvent(who, "${binding.action.summary()} → 失敗：$msg", source)
                     },
                 )
             }
@@ -204,7 +215,9 @@ class MainActivity : Activity() {
     }
 
     private fun onReadError(e: Throwable) {
-        setBanner("⚠️ 讀取失敗\n${e.message ?: e.javaClass.simpleName}", RED)
+        val msg = e.message ?: e.javaClass.simpleName
+        setBanner("⚠️ 讀取失敗\n$msg", RED)
+        logEvent("（讀取失敗）", "讀取失敗：$msg", pendingSource)
     }
 
     private fun showIdle() {
@@ -265,7 +278,7 @@ class MainActivity : Activity() {
             return
         }
         setBanner("▶ 手動測試動作…\n${binding.uidHex}", GRAY)
-        runBinding(binding, who = "手動 ${binding.uidHex}")
+        runBinding(binding, who = "手動 ${binding.uidHex}", source = SOURCE_MANUAL)
     }
 
     private fun copyReport() {
@@ -274,6 +287,36 @@ class MainActivity : Activity() {
         clipboard.setPrimaryClip(ClipData.newPlainText("NFC 讀卡結果", buildReport(c)))
         toast("已複製，可以貼給 Claude 或存到筆記")
     }
+
+    /** 複製完整操作紀錄（不只目前這張卡），貼上即可直接丟給 Claude。 */
+    private fun copyLog() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("NFC 讀卡驗證操作紀錄", fullLogText()))
+        toast("已複製全部紀錄，可以貼給 Claude 或存到筆記")
+    }
+
+    /** 用系統的分享選單匯出完整操作紀錄，可以傳到 Email、雲端硬碟、訊息等任何支援純文字的 App。 */
+    private fun exportLog() {
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "NFC 讀卡驗證操作紀錄")
+            putExtra(Intent.EXTRA_TEXT, fullLogText())
+        }
+        startActivity(Intent.createChooser(shareIntent, "匯出操作紀錄"))
+    }
+
+    /** 完整操作紀錄，含手機與 App 版本等脈絡，方便事後判斷問題。不含任何 POST 的網址、標頭或內容。 */
+    private fun fullLogText(): String = buildString {
+        appendLine("NFC 讀卡驗證 操作紀錄匯出")
+        appendLine("App 版本：v${versionName()}")
+        appendLine("手機：${Build.MANUFACTURER} ${Build.MODEL}，Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）")
+        appendLine("已登錄的卡：${store.all().size} 張")
+        appendLine("匯出時間：${isoNow()}")
+        appendLine()
+        val lines = opLog.all()
+        appendLine(if (lines.isEmpty()) "操作紀錄：無" else "操作紀錄（最近 ${lines.size} 筆，由新到舊）")
+        lines.forEach { appendLine(it) }
+    }.trimEnd()
 
     private fun resetTest() {
         stability.reset()
@@ -388,7 +431,7 @@ class MainActivity : Activity() {
                 store.put(CardBinding(uidHex, label, action))
                 refreshRegistered()
                 refreshCurrentCardUi()
-                logEvent(uidHex, "已設定動作：${action.summary()}")
+                logEvent(uidHex, "已設定動作：${action.summary()}", SOURCE_SETTING)
                 dialog.dismiss()
             }
         }
@@ -408,9 +451,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun logEvent(who: String, text: String) {
+    private fun logEvent(who: String, text: String, source: String) {
         val time = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        opLog.add("$time  $who  $text")
+        opLog.add("$time [$source] $who  $text")
         renderLog()
     }
 
@@ -480,6 +523,10 @@ class MainActivity : Activity() {
         copyBtn = button("複製結果") { copyReport() }
         resetBtn = button("重設測試") { resetTest() }
         column.addView(row(copyBtn, resetBtn), matchWidth(top = 4))
+
+        val copyLogBtn = button("複製紀錄") { copyLog() }
+        val exportLogBtn = button("匯出紀錄") { exportLog() }
+        column.addView(row(copyLogBtn, exportLogBtn), matchWidth(top = 4))
 
         registeredView = text("", 14f, mono = true).also { column.addView(it, matchWidth(top = 16)) }
         logView = text("", 13f, mono = true).also { column.addView(it, matchWidth(top = 16)) }
@@ -560,6 +607,14 @@ class MainActivity : Activity() {
         const val COOLDOWN_MS = 5_000L
         const val MAX_LOG_SHOWN = 20
         const val DEFAULT_BODY = """{"uid":"{uid}","time":"{time}"}"""
+
+        // 每筆操作紀錄標註的來源，用來判斷「App 不在前景時刷卡」的修正是否生效。
+        const val SOURCE_FOREGROUND = "前景讀卡"
+        const val SOURCE_COLD_START = "冷啟動"
+        const val SOURCE_RESUMED_INTENT = "背景喚回"
+        const val SOURCE_MANUAL = "手動測試"
+        const val SOURCE_SETTING = "設定"
+
         val GREEN = Color.parseColor("#2E7D32")
         val ORANGE = Color.parseColor("#EF6C00")
         val RED = Color.parseColor("#C62828")
